@@ -1,0 +1,110 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Permissions to check contents and open PR (release pleases) and update pages.
+permissions:
+  contents: write
+  pull-requests: write
+  pages: write
+  id-token: write
+
+jobs:
+  test-website-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test Website Build
+        run: |
+          cd .github/website
+          make install
+          make build
+          cp -r build/. '../pages'
+          ls -al "../pages"
+
+  release:
+    needs: test-website-build
+    runs-on: ubuntu-24.04
+    outputs:
+      released: ${{ steps.release-please.outputs.release_created }}
+      tag: ${{ steps.release-please.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release-please
+        with:
+          manifest-file: .github/release-please-manifest.json
+          config-file: .github/release-please-config.json
+
+  release-pdf:
+    runs-on: ubuntu-24.04
+    needs: release
+    if: ${{ needs.release.outputs.released }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Set a descriptive version. For PRs it'll be the short sha.
+      - name: Check Version
+        run: echo "${VERSION}"
+        env:
+          VERSION: ${{ needs.release.outputs.tag }}
+
+      # Set a descriptive version. For PRs it'll be the short sha.
+      - name: Prepare Markdown
+        run: |
+          # Set the env vars we use (version set for clarity).
+          export DATE=$(date +%F)
+          export VERSION="${VERSION}"
+          make -f .github/makefile prepare-markdown
+        env:
+          VERSION: ${{ needs.release.outputs.tag }}
+
+      # Create the PDF files.
+      - name: Create PDF
+        run: make -f .github/makefile create-pdf
+      
+      # Publish the PDF and intermediate markdown as an artifact.
+      # - name: Publish PDF Artifact
+      #   uses: actions/upload-artifact@3
+      #   with:
+      #     name: hacker-laws.pdf
+      #     path: hacker-laws.pdf
+
+      - name: Attach assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.release.outputs.tag }}" --clobber hacker-laws.pdf hacker-laws.md
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    needs: release
+    if: ${{ needs.release.outputs.released }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Build Website
+        run: |
+          cd .github/website
+          make install
+          make build
+          cp -r build/. '../pages'
+          ls -al "../pages"
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './.github/pages'
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
